@@ -30,6 +30,26 @@ Gladys before reporting a problem.
 
 In scope: the code of this repository and the Docker image it publishes.
 
+What the integration handles:
+
+- **Secrets**: the controller passwords are `secret` fields of the Gladys
+  configuration. The integration reads them from Gladys at startup, keeps them
+  in memory, sends them only to the controller they belong to (Redfish session
+  login, or HTTP Basic when the controller has no sessions), and never writes
+  them to `/data` nor to the logs. The session token stays in memory and the
+  session is closed when the integration stops.
+- **Power control**: off by default. When allowed, the integration only sends
+  `ComputerSystem.Reset` with `On`, `GracefulShutdown`, `PushPowerButton`,
+  `GracefulRestart`, or `ForceRestart` from the explicit scene action. Never
+  `ForceOff`. A read-only account on the controller is enough without it.
+- **Certificates**: verified by default. "Accept self-signed certificates"
+  turns the verification off for the controllers of this integration only.
+- **Stored in `/data`**: `redfish-state.json`, what the scene triggers compare
+  with (last health and power state of each server, the keys of the critical
+  log entries already seen). No secret.
+- **Network**: HTTPS (or HTTP when typed) requests to the configured
+  controllers only, on the local network. Nothing goes to the Internet.
+
 Out of scope: Gladys Assistant itself (see its
 [security policy](https://github.com/GladysAssistant/Gladys/security/policy)),
-and the third-party services and devices the integration talks to.
+and the management controllers and their firmware.
