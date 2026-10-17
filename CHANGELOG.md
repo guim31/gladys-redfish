@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-17
+
 ### Added
 
 - Servers followed through their management controller and the Redfish API
@@ -27,4 +29,5 @@ the notes of the version's GitHub Release.
   documentation.
 - Apache-2.0 `LICENSE` file.
 
-[Unreleased]: https://github.com/guim31/gladys-redfish/commits/main
+[Unreleased]: https://github.com/guim31/gladys-redfish/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/guim31/gladys-redfish/releases/tag/v1.0.0
