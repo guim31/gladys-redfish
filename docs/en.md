@@ -1,61 +1,192 @@
-# Demo Devices Template
+# Redfish (iDRAC, iLO)
 
-This is the user documentation of the integration. Gladys re-hosts this file
-and shows a permanent **Documentation** link to it in the Configuration screen
-(in the user's language, with English as the fallback) — it is when
-configuring that the user needs it most. Keep the short onboarding hints in
-the `section` blocks of the manifest `config_schema`; put the long
-step-by-step (screenshots, troubleshooting…) here.
+Rack and tower servers have a management controller (BMC) that keeps
+watching them, even when they are off: Dell iDRAC, HPE iLO, Lenovo XClarity,
+Supermicro, OpenBMC… All of them speak **Redfish**, the standard API of the
+DMTF. This integration reads it: one device per server with its power state,
+health, power draw, temperatures, fans and power supplies. Scenes can react
+when the health degrades, a critical entry appears in the event log, or a
+server is powered on or off, and a dashboard widget sums your servers up.
+Power control (on, clean shutdown, restart) is available, **off by default**.
+Everything stays on your local network.
 
-## What you get
+**Developed without the hardware: feedback welcome.** Tested against the
+official DMTF Redfish mockup server (Docker): sessions, the readings of the
+legacy and of the newer Redfish resources, the event logs, the reset action.
+The vendor differences (iLO 4, iDRAC) come from their documented schemas.
+Tell us how it goes on your server in
+[the issues](https://github.com/guim31/gladys-redfish/issues).
 
-Six demo devices show up after installation: a weather station (real data
-from Open-Meteo), a switch, a dimmable light, a smart plug with power
-metering, a motion sensor and a camera.
+## What you need
 
-## Configuration
+- Gladys Assistant 5.1.0 or later.
+- A server whose controller has Redfish enabled: iDRAC 8 (firmware 2.40 or
+  later) or iDRAC 9, iLO 4 (2.30 or later), iLO 5 or iLO 6, Lenovo XClarity
+  Controller, a recent Supermicro BMC, OpenBMC.
+- The controller reachable from the Gladys machine in HTTPS (port 443).
+- An account on the controller. A read-only one is enough; power control
+  needs an account allowed to do it (Operator on an iDRAC, "Virtual Power and
+  Reset" on an iLO).
+- Up to three controllers per installation of the integration.
 
-1. Open the **Configuration** tab of the integration.
-2. Set the **latitude** and **longitude** the demo weather station should
-   observe (they default to Paris), and pick your temperature unit.
-   The **refresh interval** sets how often the weather station and the
-   plug's power are read: every 5 minutes by default, every minute at most.
-3. Save: the devices appear in the **Discovery** tab, ready to be added.
+## Getting started
 
-The **Prefer the local connection** toggle drives the demo plug: it reports
-the channel it actually uses as a badge (local or cloud), with an orange dot
-when it runs degraded (local refused, cloud fallback).
+### 1. Prepare the controller
 
-## Actions
+- Check that you can open the web interface of the controller from a browser
+  (`https://<controller address>`).
+- Redfish is on by default on recent firmware. On an iDRAC 8, check it under
+  _iDRAC Settings → Services → Redfish_.
+- Create a dedicated account if you can, read-only unless you want power
+  control.
 
-- **Test the weather provider** — performs a live request to Open-Meteo and
-  shows the current temperature and humidity under the button.
-- **Identify a device** — pick one of your devices in the list and it will
-  signal itself (the demo light "blinks" in the logs).
+### 2. Configure the integration
 
-## Scenes
+In the **Configuration** tab of the integration:
 
-The integration adds its own cards to the scene editor (Gladys 5.1 or
-later), under the **Integrations** category:
+- **Controller address**: `192.168.1.30`, `idrac.lan` or
+  `https://idrac.lan`. HTTPS is used when no `http://` is given.
+- **User name** and **Password** of the controller account.
+- **Name** (optional): shown in the device name, the widget and the
+  messages. By default, the host name the controller gives, otherwise the
+  server model.
+- Up to two more controllers in the next sections.
+- **Refresh interval**: 30 seconds to 5 minutes (1 minute by default). The
+  event logs are read every 5 minutes.
+- **Accept self-signed certificates**: most controllers ship with a
+  self-signed certificate. If your browser warns about it too, tick this
+  option. The connection stays encrypted, but the identity of the controller
+  is no longer checked: only do it on your local network.
+- **Allow power control**: see [Power control](#power-control). Off by
+  default.
+- **Language of the names**: language of the feature names (set when the
+  server is added), of the health texts and of the scene results.
 
-- **Motion detected** (trigger) — starts the scene when a demo motion sensor
-  sees something move. Optionally pick the sensor and what moved (person,
-  animal); left empty, any detection matches. The following actions can
-  read what moved with `{{triggerEvent.data.target}}`.
-- **Identify a device** (action) — makes the chosen device signal itself.
-  It returns whether the device could signal itself, so the following
-  actions can depend on it.
+Then click **Test the connection**: one line per controller, with the servers
+found and the authentication used.
+
+### 3. Add the server
+
+The server appears in the **Discover** tab of the integration: add it. Only
+the servers added receive values; the widget and the scene triggers work for
+every server, added or not.
+
+## The device
+
+One device per server (usually one per controller; a chassis with several
+nodes gives one per node). Only the features the controller reports are
+proposed:
+
+| Feature                | Value                                                       |
+| ---------------------- | ----------------------------------------------------------- |
+| Power                  | On or off. A switch when power control is allowed           |
+| Health                 | OK, Warning or Critical: the health the controller rolls up |
+| Power draw             | Watts drawn by the server                                   |
+| Intake temperature     | Air entering the server, in °C                              |
+| Processor temperature  | The hottest processor, in °C                                |
+| Fans (rpm) / Fans (%)  | The mean speed of the fans, in the unit of the controller   |
+| Failing power supplies | 0 when all is well                                          |
+
+The device also shows the Redfish Id, serial number and BIOS version in its
+parameters. When the controller does not answer, the device shows the
+"unreachable" badge and the status under the integration name says why.
 
 ## Dashboard
 
-Add the **Demo status** widget to a dashboard: it shows the live
-temperature of the weather station and the power of the office plug, the
-connection the plug currently uses (orange when degraded) and the observed
-location. Its **Identify the light** button makes the demo light signal
-itself.
+The **Servers (Redfish)** widget has two modes:
+
+- **without a server chosen**: one line per server, on or off, health and
+  power draw, in orange or red when something is wrong;
+- **with a server chosen**: its power draw, intake and processor
+  temperatures as tiles, then its power, health, fans and power supplies.
+  When power control is allowed, the **Shut down** and **Restart** buttons
+  (server on) or **Power on** (server off) appear, each asking for a
+  confirmation.
+
+**Refresh** reads the controllers again.
+
+## Scenes
+
+### Triggers
+
+- **Server health degraded**: the health goes from OK to Warning or
+  Critical, or from Warning to Critical. Variables: server, health.
+- **New critical log entry**: a new Critical entry in the event log (SEL on
+  an iDRAC, IEL and IML on an iLO, EventLog on OpenBMC). Read every
+  5 minutes; at most three per read. Variables: server, message, date.
+- **Server powered on** and **Server powered off**: whatever the cause
+  (button, controller, power cut). Variable: server.
+
+Each trigger can be limited to one server. The first read after the
+installation only records the states: nothing is announced for an entry or a
+health that was already there.
+
+### Actions
+
+- **State of a server**: reads a server and gives the next actions its
+  name, whether the controller answers, power, health, power draw,
+  temperatures, fan speed, failing power supplies, and a summary ready to
+  send ("web483: on, health OK, 344 W, intake 25 °C…").
+- **Power command**: power on, clean shutdown, restart or forced restart
+  (reset) of a server. Needs **Allow power control**.
+
+### Scene ideas
+
+- When the health of the NAS server degrades, send its state on Telegram
+  with **State of a server**.
+- At 1 a.m., if nobody is home, **Power command** "Clean shutdown" on the
+  lab server; at 7 a.m., "Power on".
+- When a **New critical log entry** appears, notify with its message.
+
+## Power control
+
+Off by default. Once **Allow power control** is ticked, click **Update** on
+the server in the Discover tab: the **Power** feature becomes a switch.
+
+- Switching on sends `On` (or a short press of the power button when the
+  controller offers no `On`).
+- Switching off sends a **clean shutdown** (`GracefulShutdown`, or a short
+  press on an iLO 4: the operating system shuts down cleanly). **Never a
+  forced power off**: a switch flipped by mistake, a voice assistant or a
+  scene must not cut a server.
+- **Restart** (widget, scene) is a graceful restart, when the controller
+  offers it. The forced restart (reset) is only in the **Power command**
+  scene action, chosen explicitly.
+
+The server takes a while to change state: it is read again 15 seconds after
+the command, then at the usual interval.
 
 ## Troubleshooting
 
-The integration logs everything it does: check the integration logs from the
-Gladys UI (or `docker logs` on the host) with `LOG_LEVEL=debug` for the full
-detail.
+- **"certificate refused"**: tick **Accept self-signed certificates**, or
+  install a certificate on the controller that Gladys trusts.
+- **"user name or password refused"**: check the account in the web
+  interface of the controller. Some controllers lock an account after a few
+  failures.
+- **"does not answer"**: check the address and that port 443 of the
+  controller is reachable from the Gladys machine (another VLAN?).
+- **"no Redfish service at this address"**: Redfish is off, or the address
+  is not the one of the controller (iDRAC 7 and older have no Redfish).
+- **A missing feature**: the controller does not report it (some fans or
+  power supplies are only visible when the server is on).
+- **A command refused**: the account lacks the right, or the controller does
+  not offer it (an iLO 4 has no graceful restart).
+
+## Limits
+
+- Developed without the hardware: the vendor differences are handled from
+  their schemas and the official mockups, not from real servers yet.
+- One chassis per server: the first linked to the system. Blade enclosures
+  and multi-chassis systems only show that one.
+- The event log is read in pages: on a very long log, an entry between the
+  first and the last page can be missed.
+- The controller is a small chip: a refresh interval below 1 minute adds
+  load on it, and some firmware logs every session.
+- IPMI-only controllers (no Redfish) are not supported.
+
+## Credits
+
+The test fixtures come from the public mockups of the
+[DMTF Redfish Mockup Server](https://github.com/DMTF/Redfish-Mockup-Server)
+(BSD 3-Clause). Redfish is a trademark of the DMTF. This integration is not
+affiliated with Dell, HPE, Lenovo, Supermicro or the DMTF.

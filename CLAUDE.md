@@ -16,8 +16,8 @@ its only runtime dependency. It started from the official JavaScript template.
 ```bash
 npm install
 npm test                                  # node --test, the built-in runner
-node --test test/devices.test.js          # one file
-node --test --test-name-pattern "plug"    # tests whose name matches
+node --test test/hub.test.js              # one file
+node --test --test-name-pattern "iLO"     # tests whose name matches
 npm run lint                              # ESLint
 npm run format:check                      # Prettier, as the CI runs it
 npm run format                            # Prettier, fix in place
@@ -32,15 +32,21 @@ pushing.
 
 ```
 index.js                          SDK wiring only: handlers registered before connect()
-src/devices/index.js              registry of the device blueprints + dispatch helpers
-src/devices/<type>.js             one device type per file (buildDevice, onPoll, onSetValue...)
+src/app.js                        registers every SDK handler on the hub (shared with the tests)
+src/config.js                     DEFAULT_CONFIG (mirrors the manifest defaults) + normalization
+src/redfish/http.js               the one network function (node:http/https, per-request TLS)
+src/redfish/client.js             Redfish client: session/Basic, topology, reads, logs, reset
+src/redfish/model.js              raw resources → figures (vendor variants), log selection
+src/devices.js                    the Gladys device of a server (features, ids, values)
+src/hub.js                        controllers, polling timer, states, scene events, commands
+src/alerts.js                     what the triggers compare with (persisted by src/store.js)
 src/scenes.js                     scene action handlers (manifest `scene_actions`)
 src/widgets.js                    dashboard widget handlers (manifest `widgets`)
-src/config.js                     DEFAULT_CONFIG (mirrors the manifest defaults) + normalization
-src/weather.js                    example driver (Open-Meteo)
+src/texts.js                      every text sent to Gladys, in en/fr/de/es
 gladys-assistant-integration.json manifest: name, config_schema, actions, image...
-docs/en.md, docs/fr.md            user documentation, re-hosted by Gladys (mandatory)
+docs/{en,fr,de,es}.md             user documentation, re-hosted by Gladys (mandatory)
 test/                             node --test, against the SDK's fake Gladys (integration-sdk/testing)
+test/helpers/fakeRedfish.js       in-memory controller serving test/fixtures/redfish
 .github/scripts/release.mjs       release helpers (manifest bump, changelog), tested in test/
 ```
 
@@ -70,8 +76,9 @@ test/                             node --test, against the SDK's fake Gladys (in
   `type: "provider"`: 5.1.0). `test/manifest.test.js` ties the manifest to the
   code (defaults, action, scene and widget handlers): change both sides
   together.
-- **User-facing text** is bilingual (English and French): action messages,
-  manifest texts, and `docs/en.md` / `docs/fr.md`, kept in sync.
+- **User-facing text** exists in English, French, German ("du") and Spanish
+  ("usted"): action messages, manifest texts, widget texts, feature names and
+  `docs/{en,fr,de,es}.md`, kept in sync (`test/i18n.test.js`).
 - **Style.** Prettier formats, ESLint catches mistakes. Comments explain why,
   in English. Tests never touch the network.
 
@@ -233,3 +240,31 @@ long, et sur un « Sie »/« Ihr… » de politesse en allemand. Le store exige 
 - Docs `en`, `fr`, `de`, `es` avec les mêmes sections.
 - Chauffe, ouverture, sécurité : ne rien rendre pilotable « comme un thermostat » ou par un assistant
   vocal quand une erreur serait dangereuse (leçon d'OctoPrint).
+
+## Redfish (cette intégration)
+
+- **Suivre les liens `@odata.id`**, jamais un chemin constructeur : `/redfish/v1/` → `Systems` →
+  chaque système → `Links.Chassis[0]` (Thermal, Power, ThermalSubsystem, PowerSubsystem,
+  EnvironmentMetrics) et `Links.ManagedBy[0]` (LogServices). La topologie est gardée une heure ;
+  un 404 la fait relire une fois (un lien déplacé par une mise à jour de firmware).
+- **Deux générations de ressources** : `Thermal`/`Power` (dépréciées mais servies par iDRAC,
+  iLO, XClarity, OpenBMC, une requête chacune) en priorité, `ThermalSubsystem`/`PowerSubsystem`
+  sinon (une requête par ventilateur et par alimentation). iLO 4 (schéma 1.0) : `FanName`,
+  `CurrentReading` + `Units`, chemins avec `/` final.
+- **Authentification** : session (`POST SessionService/Sessions`, en-tête `X-Auth-Token`,
+  fermée par `DELETE` de la `Location` à l'arrêt) ; Basic si le contrôleur répond 400/404/405/501
+  à la création ; une session expirée (401) est renouvelée une fois. Les contrôleurs limitent le
+  nombre de sessions : ne jamais en ouvrir une par lecture.
+- **Commandes** : jamais `ForceOff`. Arrêt = `GracefulShutdown`, sinon `PushPowerButton` (iLO 4,
+  appui court ACPI). Redémarrage = `GracefulRestart` seulement ; `ForceRestart` uniquement par
+  l'action de scène, choisi explicitement. Types autorisés lus dans
+  `ResetType@Redfish.AllowableValues` ou dans l'`@Redfish.ActionInfo`. Pilotage désactivé par
+  défaut : l'interrupteur est `read_only` tant que l'option n'est pas cochée (le changement fait
+  proposer « Mettre à jour »).
+- **Journaux** : seuls les journaux d'événements matériels (`Sel`, `IEL`, `IML`, `EventLog`,
+  `Log1`…), jamais le `Lclog` d'un iDRAC (chaque changement de configuration). Lus toutes les
+  5 minutes, première page et fin (`$skip`) ; la première lecture enregistre sans annoncer.
+- **Testé contre `dmtf/redfish-mockup-server`** (Docker, mockup `public-rackmount1`) : il accepte
+  la création de session (204 + `X-Auth-Token`) et le Reset (204) sans changer `PowerState`.
+  Fixtures : `test/fixtures/redfish/` (le mockup DMTF, et un arbre « façon iLO 4 » écrit à la
+  main, signalé comme tel).
