@@ -160,3 +160,59 @@ test('a refused reset carries the message of the controller', async () => {
     /HTTP 400\): GracefulRestart is not supported/,
   );
 });
+
+test('a resource the account may not read (403) is as good as absent', async () => {
+  const bmc = new FakeRedfish();
+  const { client } = clientFor(bmc);
+  const handle = bmc.handle.bind(bmc);
+  bmc.handle = async (path, options) =>
+    path.startsWith('/redfish/v1/Managers/BMC/LogServices')
+      ? { status: 403, headers: {}, body: '' }
+      : handle(path, options);
+  const raw = await client.read();
+  assert.deepEqual(
+    raw[0].entry.logServices.map((service) => service.id),
+    ['Log1'],
+  );
+  assert.equal(await client.readLog('/redfish/v1/Managers/BMC/LogServices/Log/Entries'), null);
+  assert.equal(bmc.sessions, 1, 'the session is kept');
+});
+
+test('a password refused after a renewal leaves no session open', async () => {
+  const bmc = new FakeRedfish();
+  const { client } = clientFor(bmc);
+  await client.read();
+  // Every token is refused from now on, the login itself still works.
+  bmc.authorized = () => false;
+  await assert.rejects(client.read(), kindOf(ERROR_KINDS.AUTH));
+  assert.equal(bmc.sessions, 2);
+  assert.equal(client.token, null);
+  assert.equal(bmc.requests.filter((r) => r.method === 'DELETE').length, 2, 'both sessions closed');
+});
+
+test('concurrent requests share one login; a closed client opens none', async () => {
+  const bmc = new FakeRedfish();
+  const { client } = clientFor(bmc);
+  await Promise.all([client.read(), client.resetInfo('/redfish/v1/Systems/437XR1138R2')]);
+  assert.equal(bmc.sessions, 1);
+  await client.logout({ close: true });
+  await assert.rejects(client.read(), kindOf(ERROR_KINDS.UNREACHABLE));
+  assert.equal(bmc.sessions, 1);
+});
+
+test('the session is closed through the @odata.id of the body without Location', async () => {
+  const bmc = new FakeRedfish();
+  const handle = bmc.handle.bind(bmc);
+  bmc.handle = async (path, options) => {
+    const response = await handle(path, options);
+    if (options.method === 'POST' && /Sessions$/.test(path)) {
+      const { location, ...headers } = response.headers;
+      return { ...response, headers, body: JSON.stringify({ '@odata.id': location }) };
+    }
+    return response;
+  };
+  const { client } = clientFor(bmc);
+  await client.read();
+  await client.logout();
+  assert.equal(bmc.tokens.size, 0);
+});

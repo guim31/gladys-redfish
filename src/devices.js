@@ -195,14 +195,15 @@ const BLUEPRINT = [
   },
   {
     key: K.FANS,
-    nameKey: (s) => (s.fans?.unit === 'percent' ? 'fan_percent' : 'fan_rpm'),
+    nameKey: (s) => (fanUnit(s) === 'percent' ? 'fan_percent' : 'fan_rpm'),
     definition: { category: CATEGORY.SPEED_SENSOR, type: TYPE.SPEED_SENSOR.INTEGER, min: 0 },
     shape: (s) =>
-      s.fans?.unit === 'percent' ? { unit: UNIT.PERCENT, max: 100 } : { max: BOUNDS.RPM_MAX },
+      fanUnit(s) === 'percent' ? { unit: UNIT.PERCENT, max: 100 } : { max: BOUNDS.RPM_MAX },
     digits: 0,
     noisy: true,
     when: (s) => s.fans !== null && s.fans.unit !== null,
-    value: (s) => s.fans?.speed ?? null,
+    // A reading in another unit than the device's is not published.
+    value: (s) => (s.fans?.unit === fanUnit(s) ? (s.fans?.speed ?? null) : null),
   },
   {
     key: K.FAILED_SUPPLIES,
@@ -218,11 +219,17 @@ const BLUEPRINT = [
   },
 ];
 
-const present = (feature, system) => !feature.when || feature.when(system);
+// Present when the server reports it now, or reported it once (src/alerts.js).
+const present = (feature, system) =>
+  !feature.when || feature.when(system) || Boolean(system.known?.keys.has(feature.key));
 
-/** The feature keys a server has. */
+const fanUnit = (s) => s.known?.fanUnit ?? s.fans?.unit ?? null;
+
+/** The feature keys a server reports now. */
 export const featureKeys = (system) =>
-  BLUEPRINT.filter((feature) => present(feature, system)).map((feature) => feature.key);
+  BLUEPRINT.filter((feature) => !feature.when || feature.when(system)).map(
+    (feature) => feature.key,
+  );
 
 /**
  * The discovery payload of a server.

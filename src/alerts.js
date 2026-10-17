@@ -73,6 +73,19 @@ export class Watcher {
     return fresh;
   }
 
+  /**
+   * The features a server ever had, and the fan unit first seen: the device
+   * keeps them when a reading goes missing (server off).
+   * @returns {{ keys: Set<string>, fanUnit: string|null }}
+   */
+  rememberFeatures(key, keys, fanUnit) {
+    const entry = this.entry(key);
+    const known = new Set([...(entry.features ?? []), ...keys]);
+    entry.features = [...known].sort();
+    entry.fanUnit ??= fanUnit;
+    return { keys: known, fanUnit: entry.fanUnit ?? null };
+  }
+
   /** Forget the servers of a slot (another controller at this address). */
   forgetSlot(slot) {
     let changed = false;

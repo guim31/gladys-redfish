@@ -21,6 +21,7 @@ import {
   FEATURE_KEYS,
   buildDevice,
   deviceIds,
+  featureKeys,
   featureValues,
   itemKey,
   parseDeviceId,
@@ -202,7 +203,7 @@ export class RedfishHub {
     record.dropped = true;
     clearTimeout(record.retryTimer);
     clearTimeout(record.commandTimer);
-    record.client.logout().catch(() => {});
+    record.client.logout({ close: true }).catch(() => {});
   }
 
   async stop() {
@@ -212,7 +213,9 @@ export class RedfishHub {
       clearTimeout(record.retryTimer);
       clearTimeout(record.commandTimer);
     }
-    await Promise.all([...this.records.values()].map((record) => record.client.logout()));
+    await Promise.all(
+      [...this.records.values()].map((record) => record.client.logout({ close: true })),
+    );
     await this.store.flush();
   }
 
@@ -409,6 +412,7 @@ export class RedfishHub {
         `${this.label(record)}: ${systems.length} server(s), ${record.client.auth} authentication`,
       );
     }
+    const saved = JSON.stringify(this.watcher.saved);
     const before = new Map(record.systems.map((system) => [system.id, system]));
     record.systems = systems;
     record.entries = raw.map((item) => item.entry);
@@ -429,6 +433,13 @@ export class RedfishHub {
       const name = this.serverName(record, system);
       const server = this.deviceId(slot, system);
       const seen = this.watcher.observe(this.systemKey(slot, system), system);
+      // A feature once seen stays: a server off reports no processor
+      // temperature, and its device must not change at every power cycle.
+      system.known = this.watcher.rememberFeatures(
+        this.systemKey(slot, system),
+        featureKeys(system),
+        system.fans?.unit ?? null,
+      );
       if (seen.degraded) {
         logger.debug(`${name}: health ${seen.previousHealth} → ${system.health}`);
         await this.fireEvent(TRIGGERS.HEALTH, {
@@ -445,7 +456,7 @@ export class RedfishHub {
         });
       }
     }
-    this.store.save(this.watcher.saved);
+    this.saveIfChanged(saved);
     await this.publishRecordStates(record);
     return widgetChanged;
   }
@@ -454,12 +465,19 @@ export class RedfishHub {
   async readLogs(record) {
     record.logReadAt = this.now();
     const { slot } = record.bmc;
+    const saved = JSON.stringify(this.watcher.saved);
+    // A log of the controller shared by several systems is read once.
+    const done = new Set();
     for (const entry of record.entries) {
       const system = record.systems.find((item) => item.id === entry.id);
       if (!system) {
         continue;
       }
       for (const service of watchedLogServices(entry.logServices)) {
+        if (done.has(service.path)) {
+          continue;
+        }
+        done.add(service.path);
         let entries;
         try {
           entries = await record.client.readLog(service.entries);
@@ -470,6 +488,10 @@ export class RedfishHub {
             'warn',
             `${this.label(record)}: cannot read ${service.path}: ${err.message}`,
           );
+          continue;
+        }
+        if (entries === null) {
+          // Not readable this time: neither recorded as empty nor announced.
           continue;
         }
         const fresh = this.watcher.newEntries(
@@ -489,7 +511,14 @@ export class RedfishHub {
         }
       }
     }
-    this.store.save(this.watcher.saved);
+    this.saveIfChanged(saved);
+  }
+
+  /** Write /data only when the watcher changed (an SD card wears). */
+  saveIfChanged(before) {
+    if (JSON.stringify(this.watcher.saved) !== before) {
+      this.store.save(this.watcher.saved);
+    }
   }
 
   async applyFailure(record, err) {
@@ -504,9 +533,9 @@ export class RedfishHub {
     } else {
       logger.debug(`${this.label(record)}: ${err.message}`);
     }
-    if (err.kind === ERROR_KINDS.AUTH) {
-      // A session the controller dropped, or a changed password: log in again next time.
-      record.client.token = null;
+    if (err.kind === ERROR_KINDS.AUTH && err.status === 401) {
+      // A changed password: close the session (controllers allow few), log in again next time.
+      await record.client.logout();
     }
     if (err.kind === ERROR_KINDS.UNREACHABLE) {
       record.failures += 1;
@@ -607,7 +636,11 @@ export class RedfishHub {
     if (!feature?.external_id?.endsWith(`:${FEATURE_KEYS.POWER}`)) {
       throw new Error(pick(ACTION_TEXT.unknownCommand, this.config.language));
     }
-    await this.command(found.record, found.system, value ? COMMANDS.ON : COMMANDS.SHUTDOWN);
+    await this.command(
+      found.record,
+      found.system,
+      Number(value) === 1 ? COMMANDS.ON : COMMANDS.SHUTDOWN,
+    );
   }
 
   // --- Publishing to Gladys ----------------------------------------------------------
@@ -869,8 +902,9 @@ export function chooseResetType(command, allowed, on) {
       if (can('On')) {
         return 'On';
       }
-      // A short press starts a server that is off (iLO 4 has no "On").
-      return offers('PushPowerButton') ? 'PushPowerButton' : undefined;
+      // A short press starts a server known to be off. The button toggles:
+      // never pressed when the power state is unknown.
+      return on === false && offers('PushPowerButton') ? 'PushPowerButton' : undefined;
     case COMMANDS.SHUTDOWN:
       if (on === false) {
         return null;
@@ -879,8 +913,9 @@ export function chooseResetType(command, allowed, on) {
         return 'GracefulShutdown';
       }
       // A short press asks the operating system to shut down (ACPI), the way
-      // iLO 4 does a clean shutdown. Never ForceOff.
-      return offers('PushPowerButton') ? 'PushPowerButton' : undefined;
+      // iLO 4 does a clean shutdown, only when the server is known to be on.
+      // Never ForceOff.
+      return on === true && offers('PushPowerButton') ? 'PushPowerButton' : undefined;
     case COMMANDS.RESTART:
       return can('GracefulRestart') ? 'GracefulRestart' : undefined;
     case COMMANDS.FORCE_RESTART:

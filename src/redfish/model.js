@@ -197,7 +197,10 @@ export function parseSystem(raw) {
     bios: typeof system.BiosVersion === 'string' ? system.BiosVersion : null,
     powerState: typeof system.PowerState === 'string' ? system.PowerState : null,
     on: isOn(system.PowerState),
-    health: worstHealth(healthOf(system.Status), healthOf(entry.chassisHealth)),
+    health: worstHealth(
+      healthOf(system.Status),
+      healthOf(raw.chassis?.Status ?? entry.chassisHealth),
+    ),
     watts,
     intake: temperatures.intake,
     cpu: temperatures.cpu,
@@ -230,7 +233,8 @@ export function criticalEntries(entries) {
   return entries
     .filter((entry) => entry.Severity === 'Critical')
     .map((entry) => ({
-      key: String(entry['@odata.id'] ?? `${entry.Id}|${entry.Created ?? ''}`),
+      // With the date: a cleared SEL numbers its entries from 1 again.
+      key: `${entry['@odata.id'] ?? entry.Id}|${entry.Created ?? ''}`,
       message: String(entry.Message ?? entry.Name ?? entry.MessageId ?? '').trim(),
       created: typeof entry.Created === 'string' ? entry.Created : null,
     }))

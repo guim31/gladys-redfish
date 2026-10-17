@@ -81,6 +81,8 @@ export class RedfishClient {
     this.auth = username ? null : 'none';
     this.token = null;
     this.sessionUrl = null;
+    this.loggingIn = null;
+    this.closed = false;
     this.root = null;
     this.topology = null;
     this.topologyAt = 0;
@@ -112,11 +114,24 @@ export class RedfishClient {
     }
   }
 
-  /** Log in when needed; the session token, Basic, or nothing. */
-  async login() {
+  /**
+   * Log in when needed; the session token, Basic, or nothing. Concurrent
+   * calls share one login: a poll and a command never open two sessions.
+   */
+  login() {
     if (this.auth === 'none' || this.auth === 'basic' || this.token) {
-      return;
+      return Promise.resolve();
     }
+    if (this.closed) {
+      return Promise.reject(new RedfishError(ERROR_KINDS.UNREACHABLE, 'Client closed'));
+    }
+    this.loggingIn ??= this.openSession().finally(() => {
+      this.loggingIn = null;
+    });
+    return this.loggingIn;
+  }
+
+  async openSession() {
     const root = await this.getRoot();
     const sessions = linkOf(root?.Links?.Sessions) ?? '/redfish/v1/SessionService/Sessions';
     const response = await this.send(sessions, {
@@ -131,8 +146,19 @@ export class RedfishClient {
     if (response.status >= 200 && response.status < 300 && token) {
       this.auth = 'session';
       this.token = token;
+      // The Location header, or the @odata.id of the session the spec puts in the body.
       const location = response.headers?.location;
-      this.sessionUrl = typeof location === 'string' ? location : null;
+      let created = null;
+      try {
+        created = linkOf(JSON.parse(response.body || 'null'));
+      } catch {
+        // No JSON body (the DMTF mockup answers 204).
+      }
+      this.sessionUrl = typeof location === 'string' && location ? location : created;
+      if (this.closed) {
+        // Stopped while logging in: close it at once.
+        await this.logout();
+      }
       return;
     }
     if (NO_SESSIONS.has(response.status) || (response.status < 300 && !token)) {
@@ -146,8 +172,15 @@ export class RedfishClient {
     );
   }
 
-  /** Close the session (best effort): controllers allow few at once. */
-  async logout() {
+  /**
+   * Close the session (best effort): controllers allow few at once.
+   * @param {object} [options]
+   * @param {boolean} [options.close] for good: no login afterwards (stop, reconfiguration)
+   */
+  async logout({ close = false } = {}) {
+    if (close) {
+      this.closed = true;
+    }
     if (this.auth !== 'session' || !this.token) {
       return;
     }
@@ -178,10 +211,13 @@ export class RedfishClient {
     await this.login();
     let response = await this.send(path, options);
     if (response.status === 401 && this.auth === 'session') {
-      this.token = null;
-      this.auth = null;
+      await this.logout();
       await this.login();
       response = await this.send(path, options);
+      if (response.status === 401) {
+        // Refused again: do not leave this session open behind.
+        await this.logout();
+      }
     }
     if (response.status === 401 || response.status === 403) {
       throw new RedfishError(
@@ -218,7 +254,11 @@ export class RedfishClient {
     try {
       return await this.get(path);
     } catch (err) {
-      if (err.kind === ERROR_KINDS.HTTP && [404, 405, 501].includes(err.status)) {
+      // A resource the account may not read (403) is as good as absent.
+      if (
+        (err.kind === ERROR_KINDS.HTTP && [404, 405, 501].includes(err.status)) ||
+        (err.kind === ERROR_KINDS.AUTH && err.status === 403)
+      ) {
         return null;
       }
       throw err;
@@ -336,7 +376,9 @@ export class RedfishClient {
     const results = [];
     for (const entry of topology) {
       const system = await this.get(entry.path);
-      const raw = { entry, system, thermal: null, power: null, subsystem: null };
+      // The chassis again: its health rollup moves (a power supply, a fan).
+      const chassis = entry.chassisPath ? await this.optional(entry.chassisPath) : null;
+      const raw = { entry, system, chassis, thermal: null, power: null, subsystem: null };
       if (entry.thermal) {
         raw.thermal = await this.optional(entry.thermal);
       }
@@ -384,12 +426,12 @@ export class RedfishClient {
   /**
    * The entries of a log service: the first page, and the last one when the
    * log is longer (the newest entries are first on some controllers, last on
-   * others).
+   * others). Null when the log cannot be read: never taken for an empty log.
    */
   async readLog(entriesPath) {
     const page = await this.optional(entriesPath);
     if (!page) {
-      return [];
+      return null;
     }
     const entries = Array.isArray(page.Members) ? [...page.Members] : [];
     const count = Number(page['Members@odata.count']);
@@ -397,7 +439,8 @@ export class RedfishClient {
       const separator = entriesPath.includes('?') ? '&' : '?';
       const tail = await this.optional(
         `${entriesPath}${separator}$skip=${Math.max(0, count - entries.length)}`,
-      ).catch(() => null);
+      );
+      // No tail ($skip not supported): the first page only.
       if (Array.isArray(tail?.Members)) {
         entries.push(...tail.Members);
       }

@@ -132,7 +132,7 @@ test('critical entries, newest first, keyed by their link', async () => {
   assert.equal(entries.length, 2);
   assert.deepEqual(criticalEntries(entries), [
     {
-      key: '/redfish/v1/Systems/1/LogServices/IML/Entries/2/',
+      key: '/redfish/v1/Systems/1/LogServices/IML/Entries/2/|2026-09-02T09:30:00Z',
       message: 'Power Supply Failure (Power Supply 2)',
       created: '2026-09-02T09:30:00Z',
     },

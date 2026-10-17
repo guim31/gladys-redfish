@@ -3,8 +3,7 @@
 //
 // "State of a server" is what a condition on the device features cannot do:
 // put the state of a server in a message ("web483: on, health OK, 344 W,
-// intake 25 °C…"), with every figure as an output too, for a server the user
-// did not add. It reads the controller again when the last read is older
+// intake 25 °C…"), with every figure as an output too. It reads the controller again when the last read is older
 // than 15 seconds. An unreachable controller is an answer, not a failure:
 // `online` false, and the summary says so.
 //

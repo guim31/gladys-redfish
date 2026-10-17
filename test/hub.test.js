@@ -381,3 +381,68 @@ test('"Test the connection" reports every controller', async (t) => {
     '192.0.2.30: OK, 1 server(s) (web483), session login, power control off\n198.51.100.40: user name or password refused',
   );
 });
+
+test('a feature once seen stays when the server is off (no "Update" at each power cycle)', async (t) => {
+  const world = await rackWorld();
+  t.after(() => world.app.stop());
+  const keys = () =>
+    world.fake.discoveredDevices[0].features.map((f) => f.external_id.split(':').pop());
+  const before = keys();
+  const thermal = world.bmc.resource('/redfish/v1/Chassis/1U/Thermal');
+  for (const sensor of thermal.Temperatures) {
+    delete sensor.ReadingCelsius;
+  }
+  for (const fan of thermal.Fans) {
+    fan.Status.State = 'Absent';
+  }
+  world.bmc.setPower('Off');
+  await world.hub.pollAll();
+  assert.deepEqual(keys(), before);
+  assert.equal(
+    world.fake.discoveredDevices[0].features.find((f) => f.name === 'Fans (rpm)').max,
+    30000,
+  );
+});
+
+test('the power button is never pressed when the power state is unknown', async (t) => {
+  const bmc = new FakeRedfish({ fixture: 'ilo4-shaped' });
+  const world = await rackWorld({ bmc, config: baseConfig({ allow_power_control: true }) });
+  t.after(() => world.app.stop());
+  delete bmc.system.PowerState;
+  const server = deviceId(world.gladys, '1');
+  const ack = await world.fake.sceneAction('power_command', { server, command: 'shutdown' });
+  assert.equal(ack.success, false);
+  assert.deepEqual(bmc.resets, []);
+});
+
+test('/data is written only when something changed', async (t) => {
+  const world = await rackWorld();
+  t.after(() => world.app.stop());
+  const save = t.mock.method(world.hub.store, 'save');
+  await world.hub.pollAll();
+  await world.hub.pollAll();
+  assert.equal(save.mock.callCount(), 0);
+  world.bmc.setHealth('Warning');
+  await world.hub.pollAll();
+  assert.equal(save.mock.callCount(), 1);
+});
+
+test('a log cleared and numbered from 1 again: its new entry is announced', async (t) => {
+  const clock = createClock();
+  const world = await rackWorld({ clock });
+  t.after(() => world.app.stop());
+  const page = world.bmc.resource(LOG);
+  page.Members = [];
+  world.bmc.addLogEntry(LOG, {
+    Id: '1',
+    Severity: 'Critical',
+    Created: '2026-10-17T11:00:00Z',
+    Message: 'After the clear',
+  });
+  clock.advance(world.hub.timings.logEveryMs);
+  await world.hub.pollAll();
+  assert.deepEqual(
+    eventsOf(world, TRIGGERS.LOG).map((event) => event.data.message),
+    ['After the clear'],
+  );
+});
